@@ -34,10 +34,11 @@ Automate the manual ratchet calculations for each model in `data/input` and gene
 - **Format**: Excel (.xlsx)
 
 - **Structure**:
-    - Sheet `PerNodeEnvlope`: one row per envelope values for row in PresTempPipeID sheet.
-    - Add a units row after the header row in the output sheet `PerNodeEnvlope` with the units for each column.
+    - Sheet `PerNodeEnvlope`: one row per envelope values for each row in the PresTempPipeID sheet.
+    - Sheet `PerMaterialEnvlope`: one row per **unique pipe_material** in `PerNodeEnvlope`, containing conservative envelope values per material.
+    - Add a units row after the header row in both `PerNodeEnvlope` and `PerMaterialEnvlope`.
     - Sheet `Errors`: any validation issues (missing columns, missing PipeID matches, non-numeric values).
-    - Use (E) for the youngs modulus in all calculations and column name (E not e)
+    - Use (E) for the youngs modulus in all calculations and column name (E not e).
 
 ## 4. Technical Stack
 - **Language**: Python 3.10+
@@ -75,30 +76,37 @@ Automate the manual ratchet calculations for each model in `data/input` and gene
     - `y`= 1/ `x` for 0<=`x`<=0.5, `y`=4*(1-`x`) for 0.5<`x`<=1,
     - `allowable` = `c4` * `y` * `Sy_min` / (0.7 * `E_max` * `alpha_room`)
     - If the formula is not yet finalized, output all required inputs in `PerNodeEnvlope` and leave `allowable` blank with a clear note.
-9. **Envlope Feeder Case**    
-    - For all rows in the output sheet `PerNodeEnvlope`, and only for feeders (i.e. pipe_material == 'SA106-C'), make another row 'from' = 'Feeder', 'to' = 'Envloped' 
-    `P_max`=max absolute value of all rows in the output sheet `PerNodeEnvlope for the feeder with pipe_material == 'SA106-C',
-    `Sy_min`= min of all rows in the output sheet `PerNodeEnvlope for the feeder with pipe_material == 'SA106-C', 'Case x  Yield(SY)  psi'
-    `delta_t1_max`= max of all rows in the output sheet `PerNodeEnvlope for the feeder with pipe_material == 'SA106-C', 'Case x  Delta T1  deg F', 
-    `E_max` = max of all rows in the output sheet `PerNodeEnvlope for the feeder with pipe_material == 'SA106-C', 'Case x  Hot Mod.  E6 psi' (Use E not e for the youngs modulus in all calculations and column name)
-    `D_out`=`Actual O.D.  inch`,  the max of all rows in the output sheet `PerNodeEnvlope for the feeder with pipe_material == 'SA106-C', 'Actual O.D.  inch'
-    `thck`=`Wall Thick.  inch`,  the min of all rows in the output sheet `PerNodeEnvlope for the feeder with pipe_material == 'SA106-C', 'Wall Thick.  inch'
-    `pipe_material`=`Pipe Material`, SA106-C (constant)
-    `alpha_room`=`Thermal Exp.  E-6in/inF`(the room temperature thermal expansion coefficient, should be taken as the max of all rows in the output sheet `PerNodeEnvlope for the feeder with pipe_material == 'SA106-C', 'Thermal Exp.  E-6in/inF', they are the same but for convenience we take the max)
-    `c4`=`Ratchet C4`, the min of all rows in the output sheet `PerNodeEnvlope for the feeder with pipe_material == 'SA106-C', 'Ratchet C4', they are the same but for convenience we take the min
-    - Apply the  following calculation for the envloped feeder case, it the same as the ratchet calculation but with the max values for the feeder case.
-    - `x`=`P_max`*`D_out`/(2*`thck`*`Sy_min`)
-    - `y`= 1/ `x` for 0<=`x`<=0.5, `y`=4*(1-`x`) for 0.5<`x`<=1,
-    - `allowable` = `c4` * `y` * `Sy_min` / (0.7 * `E_max` * `alpha_room`)
-    - If the formula is not yet finalized, output all required inputs in `PerNodeEnvlope` and leave `allowable` blank with a clear note.
-    - Add this row to be the first row in the output sheet `PerNodeEnvlope` after the header row.
-    - Mark the envlope cell in differentrow in the output sheet `PerNodeEnvlope` for each column with a bold font and color red to make it stand out
-    - Mark the controlling row (From/To) for each envelope value in the envloped feeder case in different cells in the output sheet `PerNodeEnvlope` and put the controlling row number in the _case_ column.
+9. **Per-Material Envelope (PerMaterialEnvlope)**    
+    - For **each unique** `pipe_material` in `PerNodeEnvlope`, create one envelope row in `PerMaterialEnvlope`.
+    - This sheet **does not include** the `from` or `to` columns.
+    - For each material, compute:
+        - `P_max` = max absolute value of `p_max` over all rows with that material.
+        - `Sy_min` = min of `sy_min` over all rows with that material.
+        - `delta_t1_max` = max of `delta_t1_max` over all rows with that material.
+        - `E_max` = max of `E_max` over all rows with that material.
+        - `D_out` = max of `d_out` over all rows with that material.
+        - `thck` = min of `thck` over all rows with that material.
+        - `alpha_room` = max of `alpha_room` over all rows with that material.
+        - `c4` = min of `c4` over all rows with that material.
+    - **Controlling row tracking (From/To)**:
+        - For each envelope value above, record the **controlling From->To** in the corresponding `_case` column.
+        - Additional columns: `d_out_case`, `thck_case`, `c4_case` (placed immediately after `d_out`, `thck`, `c4` respectively).
+    - Apply the same ratchet calculation for each material envelope row:
+        - `x`=`P_max`*`D_out`/(2*`thck`*`Sy_min`)
+        - `y`= 1/ `x` for 0<=`x`<=0.5, `y`=4*(1-`x`) for 0.5<`x`<=1,
+        - `allowable` = `c4` * `y` * `Sy_min` / (0.7 * `E_max` * `alpha_room`)
+    - If the formula is not yet finalized, output all required inputs in `PerMaterialEnvlope` and leave `allowable` blank with a clear note.
 
-    - In the controling case numbers column, mark the controlling row number for each row in the output sheet `PerNodeEnvlope`. 
-    - Make the controling value in the controling row in the output sheet `PerNodeEnvlope` bold and color red to make it standout. 
+10. **Formatting and Highlighting**
+    - Add a units row after the header row in **both** `PerNodeEnvlope` and `PerMaterialEnvlope`.
+    - In `PerNodeEnvlope`, the `_case` columns show the **controlling load case number**.
+    - In `PerMaterialEnvlope`, the `_case` columns show the **controlling runner From->To**.
+    - Use a **different color per material** to avoid confusion:
+        - In `PerMaterialEnvlope`, bold values are colored by material.
+        - In `PerNodeEnvlope`, the controlling values are bold and colored using the same material color.
+    - Do **not** bold calculated fields (`x`, `y`, `allowable`, `allowable_note`) and do **not** color non-bold cells.
 
-10. **Outputs**: Write one output file per input file to `data/output` with the same base name + `_ratchet.xlsx`.
+11. **Outputs**: Write one output file per input file to `data/output` with the same base name + `_ratchet.xlsx`.
 
 
 ## 6. Non-Functional Requirements
