@@ -1,130 +1,154 @@
-import sys
+import math
 from pathlib import Path
 
 import pandas as pd
+from openpyxl import Workbook
 
-sys.path.append(str(Path(__file__).resolve().parents[1]))
-
-from scripts import ratchet
-
-
-def write_excel_with_blank_row(path: Path, pres_df: pd.DataFrame, props_df: pd.DataFrame) -> None:
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        pres_df.to_excel(writer, sheet_name="PresTempPipeID", index=False)
-        props_df.to_excel(writer, sheet_name="PipeProperties", index=False)
-
-    from openpyxl import load_workbook
-
-    wb = load_workbook(path)
-    for sheet_name in ["PresTempPipeID", "PipeProperties"]:
-        ws = wb[sheet_name]
-        ws.insert_rows(2)
-    wb.save(path)
+from scripts.helper import (
+    calculate_allowable,
+    compute_envelope,
+    normalize_columns,
+    normalize_key,
+    parse_cases,
+)
+from scripts.ratchet import process_file
 
 
-def test_normalize_header():
-    assert ratchet.normalize_header("  Case 1  Pres.  psi  ") == "case 1 pres. psi"
+def write_sheet_with_blank_row(ws, headers, rows):
+    ws.append(headers)
+    ws.append([None] * len(headers))
+    for row in rows:
+        ws.append(row)
 
 
-def test_parse_cases_basic():
-    df = pd.DataFrame(
-        {
-            "From": ["A"],
-            "To": ["B"],
-            "Material": ["CS"],
-            "Pipe ID": ["P-1"],
-            "Nominal in": [6],
-            "Case 1  Pres.  psi": [100],
-            "Case 1  Temp.  deg F": [200],
-            "Case 1  Auto": ["Y"],
-            "Case 1  Allow. Sm  psi": [10],
-            "Case 2  Pres.  psi": [150],
-            "Case 2  Temp.  deg F": [250],
-            "Case 2  Allow. Sm  psi": [8],
-        }
-    )
-    errors = []
-    df = ratchet.normalize_columns(df, errors, "file.xlsx", "PresTempPipeID")
-    long_df, cases = ratchet.parse_cases(df, errors, "file.xlsx")
-
-    assert cases == [1, 2]
-    assert len(long_df) == 2
-    assert "pressure_psi" in long_df.columns
-    assert "allow_sm_psi" in long_df.columns
+def test_normalize_key():
+    assert normalize_key(" Nominal     in ") == "nominal in"
+    assert normalize_key("Yield(SY)  psi") == "yield sy psi"
 
 
-def test_build_envelope():
-    df = pd.DataFrame(
-        {
-            "pipe id": ["P-1", "P-1"],
-            "pipe_id_key": ["P-1", "P-1"],
-            "case": [1, 2],
-            "pressure_psi": [100, 200],
-            "temperature_deg_f": [300, 250],
-            "allow_sm_psi": [10, 8],
-            "yield_sy_psi": [30, 25],
-            "hot_mod_e6_psi": [28, 27],
-        }
-    )
-    summary = ratchet.build_envelope(df)
-    assert summary.loc[0, "max_pressure_psi"] == 200
-    assert summary.loc[0, "max_pressure_psi_case"] == 2
-    assert summary.loc[0, "min_allow_sm_psi"] == 8
-    assert summary.loc[0, "min_allow_sm_psi_case"] == 2
-
-
-def test_process_file_smoke(tmp_path: Path):
+def test_parse_cases_and_envelope():
     pres_df = pd.DataFrame(
         {
             "From": ["A"],
             "To": ["B"],
-            "Material": ["CS"],
+            "Material": ["X"],
             "Pipe ID": ["P-1"],
-            "Nominal in": [6],
-            "Case 1  Pres.  psi": [100],
-            "Case 1  Temp.  deg F": [200],
-            "Case 1  Allow. Sm  psi": [10],
+            "Nominal     in": [4],
+            "Case 1  Pres.  psi": [10],
+            "Case 1  Yield(SY)  psi": [50],
             "Case 1  Delta T1  deg F": [20],
-            "Case 1  Delta T2  deg F": [30],
-            "Case 2  Pres.  psi": [150],
-            "Case 2  Temp.  deg F": [250],
-            "Case 2  Allow. Sm  psi": [8],
-            "Case 2  Delta T1  deg F": [25],
-            "Case 2  Delta T2  deg F": [35],
+            "Case 1  Hot Mod.  E6 psi": [30],
+            "Case 2  Pres.  psi": [-12],
+            "Case 2  Yield(SY)  psi": [45],
+            "Case 2  Delta T1  deg F": [10],
+            "Case 2  Hot Mod.  E6 psi": [28],
         }
     )
-    props_df = pd.DataFrame(
-        {
-            "PipeID": ["P-1"],
-            "Actual O.D.  inch": [10.0],
-            "Wall Thick.  inch": [0.5],
-            "Corrosion  inch": [0.05],
-            "Mill Tol.  inch": [0.02],
-            "Ratchet C4": [1.1],
-            "Min. Yield (Sy)  psi": [30000],
-            "Allow. Sm  psi": [15000],
-            "Long Mod.  E6 psi": [28],
-            "Hoop Mod.  E6 psi": [29],
-            "Shear Mod.  E6 psi": [11],
-            "Thermal Exp.  E-6in/inF": [6.5],
-            "Density  lb/cu.ft": [490],
-            "Poisson's Ratio": [0.3],
-            "Pipe Material": ["A106"],
-            "Composition": ["CS"],
-        }
-    )
+    errors = []
+    pres_df = normalize_columns(pres_df, errors, "test.xlsx", "PresTempPipeID")
+    pres_df["row_id"] = pres_df.index
+    long_df, _ = parse_cases(pres_df, ["from", "to", "material", "pipe id", "nominal in"], errors, "test.xlsx", "PresTempPipeID")
+    envelope_df = compute_envelope(long_df, errors, "test.xlsx", "PresTempPipeID")
+    row = envelope_df.iloc[0]
+    assert row["p_max"] == 12
+    assert row["p_max_case"] == 2
+    assert row["sy_min"] == 45
+    assert row["sy_min_case"] == 2
+    assert row["delta_t1_max"] == 20
+    assert row["delta_t1_case"] == 1
+    assert row["E_max"] == 30
+    assert row["E_max_case"] == 1
 
-    input_path = tmp_path / "model.xlsx"
+
+def test_calculate_allowable():
+    row = {
+        "p_max": 1.0,
+        "sy_min": 100.0,
+        "E_max": 10.0,
+        "alpha_room": 1.0,
+        "c4": 1.0,
+        "d_out": 1.0,
+        "thck": 1.0,
+    }
+    allowable, note, x_val, y_val = calculate_allowable(pd.Series(row))
+    assert note == ""
+    expected_x = (1.0 * 1.0) / (2.0 * 1.0 * 100.0)
+    expected_y = 1.0 / expected_x
+    expected = 1.0 * expected_y * 100.0 / (0.7 * 10.0 * 1.0)
+    assert math.isclose(x_val, expected_x, rel_tol=1e-6)
+    assert math.isclose(y_val, expected_y, rel_tol=1e-6)
+    assert math.isclose(allowable, expected, rel_tol=1e-6)
+
+
+def test_process_file_smoke(tmp_path: Path):
+    input_dir = tmp_path / "input"
     output_dir = tmp_path / "output"
-    write_excel_with_blank_row(input_path, pres_df, props_df)
+    input_dir.mkdir()
+    output_dir.mkdir()
 
-    ratchet.process_file(input_path, output_dir)
+    pres_headers = [
+        "From",
+        "To",
+        "Material",
+        "Pipe ID",
+        "Nominal     in",
+        "Case 1  Pres.  psi",
+        "Case 1  Yield(SY)  psi",
+        "Case 1  Delta T1  deg F",
+        "Case 1  Hot Mod.  E6 psi",
+        "Case 2  Pres.  psi",
+        "Case 2  Yield(SY)  psi",
+        "Case 2  Delta T1  deg F",
+        "Case 2  Hot Mod.  E6 psi",
+    ]
+    pres_rows = [
+        [
+            "A",
+            "B",
+            "X",
+            "P1",
+            4,
+            0.2,
+            100,
+            10,
+            30,
+            -0.3,
+            95,
+            5,
+            32,
+        ]
+    ]
 
-    output_path = output_dir / "model_ratchet.xlsx"
+    prop_headers = [
+        "PipeID",
+        "Actual O.D.  inch",
+        "Wall Thick.  inch",
+        "Pipe Material",
+        "Thermal Exp.  E-6in/inF",
+        "Ratchet C4",
+    ]
+    prop_rows = [["P1", 1.0, 1.0, "Steel", 6.5, 1.0]]
+
+    wb = Workbook()
+    ws_pres = wb.active
+    ws_pres.title = "PresTempPipeID"
+    write_sheet_with_blank_row(ws_pres, pres_headers, pres_rows)
+
+    ws_prop = wb.create_sheet("PipeProperties")
+    write_sheet_with_blank_row(ws_prop, prop_headers, prop_rows)
+
+    input_file = input_dir / "sample.xlsx"
+    wb.save(input_file)
+
+    output_path, errors = process_file(input_file, output_dir)
+    assert output_path is not None
     assert output_path.exists()
+    assert len(errors) == 0
 
-    xl = pd.ExcelFile(output_path)
-    assert set(xl.sheet_names) == {"RatchetInputs", "RatchetSummary", "Errors"}
-    summary = pd.read_excel(output_path, sheet_name="RatchetSummary")
-    assert summary.loc[0, "max_pressure_psi"] == 150
-    assert summary.loc[0, "min_allow_sm_psi"] == 8
+    result = pd.read_excel(output_path, sheet_name="PerNodeEnvlope", engine="openpyxl")
+    assert "p_max" in result.columns
+    data_rows = result[result["from"].notna()].reset_index(drop=True)
+    assert data_rows.loc[0, "p_max"] == 0.3
+    assert not pd.isna(data_rows.loc[0, "allowable"])
+    assert "x" in result.columns
+    assert "y" in result.columns
